@@ -13,7 +13,7 @@ function toTitleCase(str) {
   });
 }
 
-// --- SCANNING ---
+// --- SCANNING HELPERS ---
 function findNodes(node, currentDepth, maxDepth) {
   let results = [];
   if (node.name && /^(cards?|token)-(.+)$/.test(node.name)) {
@@ -36,7 +36,7 @@ function getTextNodes(node) {
   return texts;
 }
 
-// --- PARSING ---
+// --- PARSING LOGIC ---
 async function parseCard(cardNode, assignedId) {
   const extracted = {
     name: "Unknown", type: "", cost: 0, damage: 0, block: 0, 
@@ -48,7 +48,6 @@ async function parseCard(cardNode, assignedId) {
   for (const layer of textLayers) {
     const rawContent = layer.characters || "";
     const content = rawContent.replace(/[\r\n]+/g, " ").trim();
-    
     if (!content) continue;
 
     const costMatch = content.match(/^(\d+)\s*ap$/);
@@ -147,6 +146,50 @@ function parseToken(tokenNode) {
   };
 }
 
+// --- HELPER: Identify, Rename, and Sort ---
+function getIdentifiedCards(allCandidates) {
+  let numberedCards = [];
+  let pendingCards = [];
+  let tokenNodes = [];
+  let maxId = 0;
+
+  // 1. Categorize
+  for (const node of allCandidates) {
+    if (node.name.startsWith("token-")) {
+      tokenNodes.push(node);
+    } else {
+      const match = node.name.match(/^card-(\d+)$/);
+      if (match) {
+        const idx = parseInt(match[1], 10);
+        if (idx > maxId) maxId = idx;
+        numberedCards.push({ node, sortIndex: idx });
+      } else if (/^cards?-[?x]+$/.test(node.name)) {
+        pendingCards.push(node);
+      }
+    }
+  }
+
+  // 2. Rename Pending
+  let nextId = maxId + 1;
+  for (const node of pendingCards) {
+    const newName = `card-${nextId}`;
+    try {
+      node.name = newName; // Rename in Figma
+      numberedCards.push({ node, sortIndex: nextId });
+      nextId++;
+    } catch (err) {
+      console.error("Renaming failed", err);
+    }
+  }
+
+  // 3. Sort
+  numberedCards.sort((a, b) => a.sortIndex - b.sortIndex);
+  tokenNodes.sort((a, b) => a.name.localeCompare(b.name));
+
+  return { numberedCards, tokenNodes };
+}
+
+
 // --- MAIN CONTROLLER ---
 async function run() {
   figma.showUI(__html__, { width: 500, height: 600 });
@@ -159,7 +202,7 @@ async function run() {
   try {
     storedCache = await figma.clientStorage.getAsync(CONFIG.STORAGE_KEY);
   } catch (e) {
-    console.log("No cache found or error reading cache.");
+    console.log("No cache found");
   }
 
   figma.ui.postMessage({ 
@@ -171,71 +214,27 @@ async function run() {
   });
 
   figma.ui.onmessage = async (msg) => {
+    
+    // === HANDLER: EXPORT JSON/IMAGES ===
     if (msg.type === 'run-scan') {
-      
       let pageNode;
-      try {
-        pageNode = await figma.getNodeByIdAsync(msg.pageId);
-      } catch (err) {
-        console.error("Failed to load page node:", err);
-      }
+      try { pageNode = await figma.getNodeByIdAsync(msg.pageId); } catch (e) {}
 
-      if (!pageNode || pageNode.type !== 'PAGE') {
+      if (!pageNode) {
         figma.ui.postMessage({ type: 'error', message: "Page not found" });
         return;
       }
 
       const scanDepth = msg.scanDepth || CONFIG.DEFAULT_SEARCH_DEPTH;
-      console.log(`Scanning page: ${pageNode.name} with depth: ${scanDepth}`);
-      
       const allCandidates = findNodes(pageNode, 0, scanDepth);
       
-      let numberedCards = [];
-      let pendingCards = [];
-      let tokenNodes = [];
-      let maxId = 0; // Default start if no cards exist
-
-      // 1. Categorize & Find Max ID
-      for (const node of allCandidates) {
-        if (node.name.startsWith("token-")) {
-          tokenNodes.push(node);
-        } else {
-          const match = node.name.match(/^card-(\d+)$/);
-          if (match) {
-            const idx = parseInt(match[1], 10);
-            if (idx > maxId) maxId = idx;
-            numberedCards.push({ node, sortIndex: idx });
-          } else if (/^cards?-[?x]+$/.test(node.name)) {
-            pendingCards.push(node);
-          }
-        }
-      }
-
-      // 2. Rename & Merge Pending Cards
-      // These become standard "numbered" cards after renaming
-      let nextId = maxId + 1;
-      for (const node of pendingCards) {
-        const newName = `card-${nextId}`;
-        try {
-          // Rename the node in Figma
-          node.name = newName; 
-          
-          // Add to processing list
-          numberedCards.push({ node, sortIndex: nextId });
-          nextId++;
-        } catch (err) {
-          console.error("Failed to rename node", node.name, err);
-        }
-      }
-
-      // 3. Sort Combined List (Renamed + Original)
-      numberedCards.sort((a, b) => a.sortIndex - b.sortIndex);
-
+      // Identify & Rename
+      const { numberedCards, tokenNodes } = getIdentifiedCards(allCandidates);
+      
       const finalMap = {};
       const totalItems = numberedCards.length + tokenNodes.length;
       let processedCount = 0;
 
-      // 4. Processing Helper
       const processNode = async (node, id, parserFunc) => {
         const result = await parserFunc(node, id);
         finalMap[result.data.id] = result.data;
@@ -243,11 +242,9 @@ async function run() {
 
         if (msg.exportImages) {
           let shouldExport = true;
-
           // Smart Scan Logic
           if (!msg.forceFull && storedCache && storedCache.json) {
             const oldData = storedCache.json[result.data.id];
-            // Compare new data vs cached data
             if (oldData && JSON.stringify(oldData) === JSON.stringify(result.data)) {
               shouldExport = false;
             }
@@ -255,57 +252,79 @@ async function run() {
 
           if (shouldExport) {
             try {
-              await delay(20); // Throttle
+              await delay(20);
               const bytes = await node.exportAsync({ format: 'PNG', constraint: { type: 'SCALE', value: 1 } });
-              
-              figma.ui.postMessage({
-                type: 'image-chunk',
-                filename: result.filename,
-                data: bytes,
-                current: processedCount,
-                total: totalItems
-              });
-            } catch (err) {
-              console.error(`Failed to export ${result.filename}`, err);
-            }
+              figma.ui.postMessage({ type: 'image-chunk', filename: result.filename, data: bytes, current: processedCount, total: totalItems });
+            } catch (err) { console.error("Export fail", err); }
           } else {
-             // Report progress even if skipped
-             figma.ui.postMessage({
-                type: 'image-chunk',
-                filename: null,
-                data: null, 
-                current: processedCount,
-                total: totalItems
-             });
+             figma.ui.postMessage({ type: 'image-chunk', filename: null, data: null, current: processedCount, total: totalItems });
           }
         }
       };
 
-      // 5. Execute Processing
-      // A. Numbered Cards (Includes newly renamed ones)
+      // Process Numbered Cards
       for (const item of numberedCards) {
         await processNode(item.node, item.sortIndex, parseCard);
       }
-
-      // B. Tokens (After cards)
-      tokenNodes.sort((a, b) => a.name.localeCompare(b.name));
+      // Process Tokens
       for (const node of tokenNodes) {
         await processNode(node, null, parseToken);
       }
 
-      // 6. Save Cache
-      const newCache = {
-        timestamp: Date.now(),
-        json: finalMap
-      };
+      // Save Cache
+      const newCache = { timestamp: Date.now(), json: finalMap };
       storedCache = newCache; 
       await figma.clientStorage.setAsync(CONFIG.STORAGE_KEY, newCache);
 
-      figma.ui.postMessage({ 
-        type: 'complete', 
-        json: JSON.stringify(finalMap, null, 2), 
-        count: Object.keys(finalMap).length
-      });
+      figma.ui.postMessage({ type: 'complete', json: JSON.stringify(finalMap, null, 2), count: Object.keys(finalMap).length });
+    }
+
+    // === HANDLER: EXTRACT FRAMES ===
+    else if (msg.type === 'run-extract') {
+      try {
+        const sourcePage = await figma.getNodeByIdAsync(msg.sourceId);
+        const targetPage = await figma.getNodeByIdAsync(msg.targetId);
+
+        if (!sourcePage || !targetPage) throw new Error("Pages not found");
+
+        // 1. Scan Source (Renaming occurs here automatically via helper)
+        const allCandidates = findNodes(sourcePage, 0, CONFIG.DEFAULT_SEARCH_DEPTH);
+        const { numberedCards, tokenNodes } = getIdentifiedCards(allCandidates);
+        
+        // 2. Clear Target
+        targetPage.children.forEach(child => child.remove());
+
+        // 3. Clone & Move
+        let copiedCount = 0;
+        
+        // Helper to clone
+        const cloneAndMove = (node) => {
+          const clone = node.clone();
+          targetPage.appendChild(clone);
+          
+          // Optional: Arrange nicely? 
+          // For now, keep original positions (default clone behavior) 
+          // but ensure they are visible. 
+          // Since we reparent, they keep their 'x/y' relative to parent. 
+          // If deep nested, x/y might be small. On Page (root), they appear at top-left.
+          clone.x = node.absoluteTransform[0][2];
+          clone.y = node.absoluteTransform[1][2];
+          
+          copiedCount++;
+        };
+
+        for (const item of numberedCards) cloneAndMove(item.node);
+        for (const node of tokenNodes) cloneAndMove(node);
+
+        figma.ui.postMessage({ 
+          type: 'extract-complete', 
+          count: copiedCount, 
+          targetName: targetPage.name 
+        });
+
+      } catch (err) {
+        figma.ui.postMessage({ type: 'error', message: err.message });
+      }
     }
   };
 }
