@@ -1,6 +1,7 @@
 // --- CONFIGURATION ---
 const CONFIG = {
-  DEFAULT_SEARCH_DEPTH: 3, 
+  DEFAULT_SEARCH_DEPTH: 3,
+  SYNC_SEARCH_DEPTH: 4, 
   IMG_BASE_URL: "https://jackyeoh-ls.github.io/tcg-arena-ccg/img",
   STORAGE_KEY: "card_exporter_cache"
 };
@@ -49,11 +50,70 @@ function getTextNodes(node) {
   return texts;
 }
 
+// --- HELPER: SYNC NODE IN-PLACE ---
+async function syncNodeContent(source, target) {
+  // 1. Resize (Update dimensions)
+  target.resize(source.width, source.height);
+
+  // 2. Sync Visual Styles
+  target.opacity = source.opacity;
+  target.blendMode = source.blendMode;
+  target.isMask = source.isMask;
+  target.fills = source.fills;
+  target.strokes = source.strokes;
+  target.strokeWeight = source.strokeWeight;
+  target.strokeAlign = source.strokeAlign;
+  target.strokeCap = source.strokeCap;
+  target.strokeJoin = source.strokeJoin;
+  target.dashPattern = source.dashPattern;
+  target.effects = source.effects;
+  
+  // Corner Radius
+  if (source.cornerRadius !== figma.mixed) target.cornerRadius = source.cornerRadius;
+  if (source.cornerSmoothing !== figma.mixed) target.cornerSmoothing = source.cornerSmoothing;
+  if (source.topLeftRadius) target.topLeftRadius = source.topLeftRadius;
+  if (source.topRightRadius) target.topRightRadius = source.topRightRadius;
+  if (source.bottomLeftRadius) target.bottomLeftRadius = source.bottomLeftRadius;
+  if (source.bottomRightRadius) target.bottomRightRadius = source.bottomRightRadius;
+
+  // 3. Sync AutoLayout Properties (if both are Frames)
+  if (source.type === "FRAME" && target.type === "FRAME") {
+    target.layoutMode = source.layoutMode;
+    target.primaryAxisSizingMode = source.primaryAxisSizingMode;
+    target.counterAxisSizingMode = source.counterAxisSizingMode;
+    target.primaryAxisAlignItems = source.primaryAxisAlignItems;
+    target.counterAxisAlignItems = source.counterAxisAlignItems;
+    target.paddingLeft = source.paddingLeft;
+    target.paddingRight = source.paddingRight;
+    target.paddingTop = source.paddingTop;
+    target.paddingBottom = source.paddingBottom;
+    target.itemSpacing = source.itemSpacing;
+    target.clipsContent = source.clipsContent;
+  }
+
+  // 4. Replace Children (The "Content" update)
+  // Clear existing children in target
+  for (const child of target.children) {
+    child.remove();
+  }
+  
+  // Clone children from source to target
+  for (const child of source.children) {
+    target.appendChild(child.clone());
+  }
+}
+
 // --- PARSING LOGIC ---
 async function parseCard(cardNode, assignedId) {
   const extracted = {
-    name: "Unknown", type: "", cost: 0, damage: 0, block: 0, 
-    text: "", head: false, body: false, leg: false
+    name: "Unknown", 
+    type: "", 
+    types: [], 
+    cost: 0, 
+    damage: 0, 
+    block: 0, 
+    text: "", 
+    head: false, body: false, leg: false
   };
 
   const textLayers = getTextNodes(cardNode);
@@ -84,7 +144,9 @@ async function parseCard(cardNode, assignedId) {
 
     const typeTextMatch = content.match(/^\(([^)]+)\)\s*(.*)/);
     if (typeTextMatch) {
-      extracted.type = toTitleCase(typeTextMatch[1].split(/[,\s]+/)[0]);
+      const rawTypeStr = typeTextMatch[1];
+      extracted.types = rawTypeStr.split(',').map(t => toTitleCase(t.trim()));
+      extracted.type = extracted.types[0] || "";
       extracted.text = typeTextMatch[2].toLowerCase();
       continue;
     }
@@ -121,6 +183,7 @@ async function parseCard(cardNode, assignedId) {
       },
       name: extracted.name,
       type: extracted.type,
+      types: extracted.types,
       cost: extracted.cost,
       DMG: extracted.damage,
       Block: extracted.block,
@@ -286,33 +349,70 @@ async function run() {
       figma.ui.postMessage({ type: 'complete', json: JSON.stringify(finalMap, null, 2), count: Object.keys(finalMap).length });
     }
 
-    // === 2. EXTRACT FRAMES ===
+    // === 2. SYNC FRAMES IN-PLACE (NON-DESTRUCTIVE) ===
     else if (msg.type === 'run-extract') {
       try {
         const sourcePage = await figma.getNodeByIdAsync(msg.sourceId);
         const targetPage = await figma.getNodeByIdAsync(msg.targetId);
 
         if (!sourcePage || !targetPage) throw new Error("Pages not found");
+        if (sourcePage.id === targetPage.id) throw new Error("Source and Target must be different");
 
-        const allCandidates = findNodes(sourcePage, 0, CONFIG.DEFAULT_SEARCH_DEPTH);
-        const { numberedCards, tokenNodes } = getIdentifiedCards(allCandidates);
+        // 1. Scan Source for master copies
+        const sourceCandidates = findNodes(sourcePage, 0, CONFIG.SYNC_SEARCH_DEPTH);
+        const { numberedCards: sourceCards } = getIdentifiedCards(sourceCandidates);
         
-        await delay(100);
-        targetPage.children.forEach(child => child.remove());
+        const sourceMap = new Map();
+        sourceCards.forEach(item => sourceMap.set(item.sortIndex, item.node));
 
-        let copiedCount = 0;
-        const cloneAndMove = (node) => {
-          const clone = node.clone();
-          targetPage.appendChild(clone);
-          clone.x = (copiedCount % 10) * (clone.width + 50);
-          clone.y = Math.floor(copiedCount / 10) * (clone.height + 50);
-          copiedCount++;
-        };
+        // 2. Scan Target for matches (No renaming here)
+        const targetCandidates = findNodes(targetPage, 0, CONFIG.SYNC_SEARCH_DEPTH);
+        const targetMatches = [];
+        
+        for (const node of targetCandidates) {
+            const match = node.name.match(/^card-(\d+)$/);
+            if (match) {
+                targetMatches.push({
+                    index: parseInt(match[1], 10),
+                    node: node
+                });
+            }
+        }
 
-        for (const item of numberedCards) cloneAndMove(item.node);
-        for (const node of tokenNodes) cloneAndMove(node);
+        let updatedCount = 0;
+        let notFoundCount = 0;
 
-        figma.ui.postMessage({ type: 'extract-complete', count: copiedCount, targetName: targetPage.name });
+        // 3. Perform Sync (Update Content In-Place)
+        for (const tItem of targetMatches) {
+            const sourceNode = sourceMap.get(tItem.index);
+            
+            if (sourceNode) {
+                // Determine if we can sync in-place or if we must swap (e.g. Instance issues)
+                const targetIsInstance = tItem.node.type === "INSTANCE";
+                
+                if (targetIsInstance) {
+                    // If target is an instance, we detach it to make it a Frame so we can edit internals
+                    // Alternatively, if you want to keep it as an instance, you'd have to swap the component main.
+                    // Here we assume "Sync Content" means "Make it look like source".
+                    tItem.node.detachInstance();
+                }
+
+                await syncNodeContent(sourceNode, tItem.node);
+                updatedCount++;
+            } else {
+                notFoundCount++;
+            }
+            
+            if (updatedCount % 20 === 0) await delay(10);
+        }
+
+        figma.ui.postMessage({ 
+            type: 'extract-complete', 
+            count: updatedCount, 
+            targetName: targetPage.name,
+            missing: notFoundCount
+        });
+
       } catch (err) {
         figma.ui.postMessage({ type: 'error', message: err.message });
       }
@@ -353,10 +453,16 @@ async function run() {
                    if (/^(cards?)-/.test(cardNode.name)) {
                       const parsed = await parseCard(cardNode, 0); 
                       
+                      const synergies = [];
+                      synergies.push(`${parsed.data.cost} AP`);
+                      if (parsed.data.types && parsed.data.types.length > 0) {
+                        synergies.push(...parsed.data.types);
+                      }
+
                       deckObj.cardPool.push({
                         name: parsed.data.name,
                         rarity: rarityName,
-                        synergies: []
+                        synergies: synergies
                       });
                    }
                 }

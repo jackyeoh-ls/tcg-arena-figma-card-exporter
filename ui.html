@@ -74,7 +74,7 @@
     <h3>TCG Card Exporter</h3>
     <div class="tabs">
       <div class="tab active" onclick="switchTab('tab-export')">JSON Exporter</div>
-      <div class="tab" onclick="switchTab('tab-extract')">Frame Extractor</div>
+      <div class="tab" onclick="switchTab('tab-extract')">Sync Content</div>
       <div class="tab" onclick="switchTab('tab-minideck')">Minideck Data</div>
     </div>
   </div>
@@ -124,21 +124,22 @@
 
   <div id="tab-extract" class="tab-content">
     <p class="helper-text" style="font-size:11px; margin-bottom:15px; color:#555;">
-      Scans the Source Page for cards, renames pending cards, and copies frames to the Target Page.
+      Updates internal content of Target cards to match Source cards by ID (e.g. "card-1").
+      <br><strong>Non-Destructive:</strong> Preserves frame position and hierarchy.
+      <br>Scans up to 4 levels deep.
     </p>
 
     <div style="margin-bottom: 15px;">
-      <label for="sourcePageSelect">Source Page (Scan Here)</label>
+      <label for="sourcePageSelect">Source Page (Master)</label>
       <select id="sourcePageSelect"></select>
     </div>
 
     <div style="margin-bottom: 20px;">
-      <label for="targetPageSelect">Target Page (Copy To)</label>
+      <label for="targetPageSelect">Target Page (To Update)</label>
       <select id="targetPageSelect"></select>
-      <div class="helper-text" style="color:#d9534f; margin-top:5px; font-weight:bold;">Warning: Target Page content will be cleared!</div>
     </div>
 
-    <button id="extractBtn" class="btn-primary">Extract Frames</button>
+    <button id="extractBtn" class="btn-primary">Sync Card Content</button>
     <div id="extractStatus" class="status">Ready.</div>
   </div>
 
@@ -257,7 +258,7 @@
       }}, '*');
     }
 
-    // EXTRACT
+    // EXTRACT (SYNC)
     extractBtn.onclick = () => {
       const sourceId = sourcePageSelect.value;
       const targetId = targetPageSelect.value;
@@ -265,7 +266,7 @@
       if (sourceId === targetId) { alert("Source and Target pages must be different."); return; }
 
       toggleInputs(true);
-      extractStatus.textContent = "Extracting frames...";
+      extractStatus.textContent = "Updating card content...";
       extractStatus.className = "status";
 
       parent.postMessage({ pluginMessage: { type: 'run-extract', sourceId, targetId }}, '*');
@@ -362,7 +363,8 @@
       }
 
       else if (msg.type === 'extract-complete') {
-        extractStatus.textContent = `Success! Copied ${msg.count} frames to "${msg.targetName}".`;
+        extractStatus.innerHTML = `Updated content for <b>${msg.count}</b> cards.` + 
+                                  (msg.missing > 0 ? `<br>(Skipped ${msg.missing} cards not found in source)` : "");
         extractStatus.className = "status success";
         toggleInputs(false);
       }
