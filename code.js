@@ -13,10 +13,23 @@ function toTitleCase(str) {
   });
 }
 
+// --- HELPER: Random Unique Color ---
+function getRandomColor(usedColors) {
+  let color;
+  let attempts = 0;
+  do {
+    color = "#" + Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0').toUpperCase();
+    attempts++;
+    if (attempts > 100) break; 
+  } while (usedColors.has(color));
+  
+  return color;
+}
+
 // --- SCANNING HELPERS ---
 function findNodes(node, currentDepth, maxDepth) {
   let results = [];
-  if (node.name && /^(cards?|token)-(.+)$/.test(node.name)) {
+  if (node.name && /^(cards?|token)-(.+)$/i.test(node.name)) {
     results.push(node);
   }
   if (currentDepth < maxDepth && "children" in node) {
@@ -146,35 +159,34 @@ function parseToken(tokenNode) {
   };
 }
 
-// --- HELPER: Identify, Rename, and Sort ---
 function getIdentifiedCards(allCandidates) {
   let numberedCards = [];
   let pendingCards = [];
   let tokenNodes = [];
   let maxId = 0;
 
-  // 1. Categorize
   for (const node of allCandidates) {
-    if (node.name.startsWith("token-")) {
+    const name = node.name;
+    
+    if (name.startsWith("token-")) {
       tokenNodes.push(node);
-    } else {
-      const match = node.name.match(/^card-(\d+)$/);
-      if (match) {
-        const idx = parseInt(match[1], 10);
-        if (idx > maxId) maxId = idx;
-        numberedCards.push({ node, sortIndex: idx });
-      } else if (/^cards?-[?x]+$/.test(node.name)) {
-        pendingCards.push(node);
-      }
+    } 
+    else if (/^card-(\d+)$/.test(name)) {
+      const match = name.match(/^card-(\d+)$/);
+      const idx = parseInt(match[1], 10);
+      if (idx > maxId) maxId = idx;
+      numberedCards.push({ node, sortIndex: idx });
+    } 
+    else if (/^cards?-[?x]+$/.test(name)) {
+      pendingCards.push(node);
     }
   }
 
-  // 2. Rename Pending
   let nextId = maxId + 1;
   for (const node of pendingCards) {
     const newName = `card-${nextId}`;
     try {
-      node.name = newName; // Rename in Figma
+      node.name = newName; 
       numberedCards.push({ node, sortIndex: nextId });
       nextId++;
     } catch (err) {
@@ -182,7 +194,6 @@ function getIdentifiedCards(allCandidates) {
     }
   }
 
-  // 3. Sort
   numberedCards.sort((a, b) => a.sortIndex - b.sortIndex);
   tokenNodes.sort((a, b) => a.name.localeCompare(b.name));
 
@@ -215,7 +226,7 @@ async function run() {
 
   figma.ui.onmessage = async (msg) => {
     
-    // === HANDLER: EXPORT JSON/IMAGES ===
+    // === 1. EXPORT JSON/IMAGES ===
     if (msg.type === 'run-scan') {
       let pageNode;
       try { pageNode = await figma.getNodeByIdAsync(msg.pageId); } catch (e) {}
@@ -227,10 +238,10 @@ async function run() {
 
       const scanDepth = msg.scanDepth || CONFIG.DEFAULT_SEARCH_DEPTH;
       const allCandidates = findNodes(pageNode, 0, scanDepth);
-      
-      // Identify & Rename
       const { numberedCards, tokenNodes } = getIdentifiedCards(allCandidates);
       
+      if (numberedCards.length > 0) await delay(100);
+
       const finalMap = {};
       const totalItems = numberedCards.length + tokenNodes.length;
       let processedCount = 0;
@@ -242,7 +253,6 @@ async function run() {
 
         if (msg.exportImages) {
           let shouldExport = true;
-          // Smart Scan Logic
           if (!msg.forceFull && storedCache && storedCache.json) {
             const oldData = storedCache.json[result.data.id];
             if (oldData && JSON.stringify(oldData) === JSON.stringify(result.data)) {
@@ -262,16 +272,13 @@ async function run() {
         }
       };
 
-      // Process Numbered Cards
       for (const item of numberedCards) {
         await processNode(item.node, item.sortIndex, parseCard);
       }
-      // Process Tokens
       for (const node of tokenNodes) {
         await processNode(node, null, parseToken);
       }
 
-      // Save Cache
       const newCache = { timestamp: Date.now(), json: finalMap };
       storedCache = newCache; 
       await figma.clientStorage.setAsync(CONFIG.STORAGE_KEY, newCache);
@@ -279,7 +286,7 @@ async function run() {
       figma.ui.postMessage({ type: 'complete', json: JSON.stringify(finalMap, null, 2), count: Object.keys(finalMap).length });
     }
 
-    // === HANDLER: EXTRACT FRAMES ===
+    // === 2. EXTRACT FRAMES ===
     else if (msg.type === 'run-extract') {
       try {
         const sourcePage = await figma.getNodeByIdAsync(msg.sourceId);
@@ -287,39 +294,83 @@ async function run() {
 
         if (!sourcePage || !targetPage) throw new Error("Pages not found");
 
-        // 1. Scan Source (Renaming occurs here automatically via helper)
         const allCandidates = findNodes(sourcePage, 0, CONFIG.DEFAULT_SEARCH_DEPTH);
         const { numberedCards, tokenNodes } = getIdentifiedCards(allCandidates);
         
-        // 2. Clear Target
+        await delay(100);
         targetPage.children.forEach(child => child.remove());
 
-        // 3. Clone & Move
         let copiedCount = 0;
-        
-        // Helper to clone
         const cloneAndMove = (node) => {
           const clone = node.clone();
           targetPage.appendChild(clone);
-          
-          // Optional: Arrange nicely? 
-          // For now, keep original positions (default clone behavior) 
-          // but ensure they are visible. 
-          // Since we reparent, they keep their 'x/y' relative to parent. 
-          // If deep nested, x/y might be small. On Page (root), they appear at top-left.
-          clone.x = node.absoluteTransform[0][2];
-          clone.y = node.absoluteTransform[1][2];
-          
+          clone.x = (copiedCount % 10) * (clone.width + 50);
+          clone.y = Math.floor(copiedCount / 10) * (clone.height + 50);
           copiedCount++;
         };
 
         for (const item of numberedCards) cloneAndMove(item.node);
         for (const node of tokenNodes) cloneAndMove(node);
 
+        figma.ui.postMessage({ type: 'extract-complete', count: copiedCount, targetName: targetPage.name });
+      } catch (err) {
+        figma.ui.postMessage({ type: 'error', message: err.message });
+      }
+    }
+
+    // === 3. MINIDECK DATA EXTRACTION ===
+    else if (msg.type === 'extract-minideck-data') {
+      try {
+        const pageNode = await figma.getNodeByIdAsync(msg.pageId);
+        if (!pageNode) throw new Error("Page not found");
+
+        const minidecks = [];
+        const usedColors = new Set(); 
+
+        for (const deckFrame of pageNode.children) {
+          if (deckFrame.type !== "FRAME" && deckFrame.type !== "GROUP" && deckFrame.type !== "SECTION") continue;
+          if (deckFrame.name.toLowerCase().startsWith("card-")) continue;
+
+          const uniqueColor = getRandomColor(usedColors);
+          usedColors.add(uniqueColor);
+
+          const deckObj = {
+            name: deckFrame.name,
+            description: "Generated from Figma",
+            color: uniqueColor,
+            cardPool: []
+          };
+
+          if (deckFrame.children) {
+            for (const rarityFrame of deckFrame.children) {
+              if (rarityFrame.type !== "FRAME" && rarityFrame.type !== "GROUP") continue;
+              
+              const rarityName = rarityFrame.name.toLowerCase();
+              if (rarityName === "generated") continue;
+
+              if (rarityFrame.children) {
+                for (const cardNode of rarityFrame.children) {
+                   if (/^(cards?)-/.test(cardNode.name)) {
+                      const parsed = await parseCard(cardNode, 0); 
+                      
+                      deckObj.cardPool.push({
+                        name: parsed.data.name,
+                        rarity: rarityName,
+                        synergies: []
+                      });
+                   }
+                }
+              }
+            }
+          }
+          
+          minidecks.push(deckObj);
+        }
+
         figma.ui.postMessage({ 
-          type: 'extract-complete', 
-          count: copiedCount, 
-          targetName: targetPage.name 
+          type: 'minideck-data-complete', 
+          count: minidecks.length, 
+          json: JSON.stringify(minidecks, null, 2) 
         });
 
       } catch (err) {
