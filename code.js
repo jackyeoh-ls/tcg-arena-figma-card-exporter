@@ -1,7 +1,6 @@
 // --- CONFIGURATION ---
 const CONFIG = {
-  DEFAULT_SEARCH_DEPTH: 3,
-  SYNC_SEARCH_DEPTH: 4, 
+  DEFAULT_SEARCH_DEPTH: 3, 
   IMG_BASE_URL: "https://jackyeoh-ls.github.io/tcg-arena-ccg/img",
   STORAGE_KEY: "card_exporter_cache"
 };
@@ -14,17 +13,56 @@ function toTitleCase(str) {
   });
 }
 
-// --- HELPER: Random Unique Color ---
-function getRandomColor(usedColors) {
-  let color;
+// --- HELPER: HSL to Hex ---
+function hslToHex(h, s, l) {
+  l /= 100;
+  const a = s * Math.min(l, 1 - l) / 100;
+  const f = n => {
+    const k = (n + h / 30) % 12;
+    const color = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
+    return Math.round(255 * color).toString(16).padStart(2, '0');
+  };
+  return `#${f(0)}${f(8)}${f(4)}`.toUpperCase();
+}
+
+// --- HELPER: Random Unique & Bright Color ---
+function getDistinctBrightColor(usedHues) {
+  let h;
   let attempts = 0;
-  do {
-    color = "#" + Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0').toUpperCase();
+  let isDistict = false;
+
+  // 1. Hue Selection (Try to find a distinct hue)
+  while (!isDistict && attempts < 50) {
+    h = Math.floor(Math.random() * 360);
+    
+    // Check distance from existing hues
+    let tooClose = false;
+    for (const existingHue of usedHues) {
+      let diff = Math.abs(h - existingHue);
+      if (diff > 180) diff = 360 - diff; // Handle circle wrap-around (e.g. 350 vs 10)
+      
+      if (diff < 30) { // Enforce ~30 degree separation
+        tooClose = true;
+        break;
+      }
+    }
+
+    if (!tooClose) {
+      isDistict = true;
+    }
     attempts++;
-    if (attempts > 100) break; 
-  } while (usedColors.has(color));
-  
-  return color;
+  }
+
+  // If we run out of attempts (too many decks), just accept the last generated hue
+  usedHues.push(h);
+
+  // 2. High Brightness & Saturation
+  // Saturation: 75% - 100% (Vibrant)
+  const s = Math.floor(Math.random() * (100 - 75 + 1)) + 75; 
+  // Lightness: 60% - 85% (Bright, but legible text)
+  const l = Math.floor(Math.random() * (85 - 60 + 1)) + 60; 
+
+  return hslToHex(h, s, l);
 }
 
 // --- SCANNING HELPERS ---
@@ -48,59 +86,6 @@ function getTextNodes(node) {
     for (const child of node.children) texts = texts.concat(getTextNodes(child));
   }
   return texts;
-}
-
-// --- HELPER: SYNC NODE IN-PLACE ---
-async function syncNodeContent(source, target) {
-  // 1. Resize (Update dimensions)
-  target.resize(source.width, source.height);
-
-  // 2. Sync Visual Styles
-  target.opacity = source.opacity;
-  target.blendMode = source.blendMode;
-  target.isMask = source.isMask;
-  target.fills = source.fills;
-  target.strokes = source.strokes;
-  target.strokeWeight = source.strokeWeight;
-  target.strokeAlign = source.strokeAlign;
-  target.strokeCap = source.strokeCap;
-  target.strokeJoin = source.strokeJoin;
-  target.dashPattern = source.dashPattern;
-  target.effects = source.effects;
-  
-  // Corner Radius
-  if (source.cornerRadius !== figma.mixed) target.cornerRadius = source.cornerRadius;
-  if (source.cornerSmoothing !== figma.mixed) target.cornerSmoothing = source.cornerSmoothing;
-  if (source.topLeftRadius) target.topLeftRadius = source.topLeftRadius;
-  if (source.topRightRadius) target.topRightRadius = source.topRightRadius;
-  if (source.bottomLeftRadius) target.bottomLeftRadius = source.bottomLeftRadius;
-  if (source.bottomRightRadius) target.bottomRightRadius = source.bottomRightRadius;
-
-  // 3. Sync AutoLayout Properties (if both are Frames)
-  if (source.type === "FRAME" && target.type === "FRAME") {
-    target.layoutMode = source.layoutMode;
-    target.primaryAxisSizingMode = source.primaryAxisSizingMode;
-    target.counterAxisSizingMode = source.counterAxisSizingMode;
-    target.primaryAxisAlignItems = source.primaryAxisAlignItems;
-    target.counterAxisAlignItems = source.counterAxisAlignItems;
-    target.paddingLeft = source.paddingLeft;
-    target.paddingRight = source.paddingRight;
-    target.paddingTop = source.paddingTop;
-    target.paddingBottom = source.paddingBottom;
-    target.itemSpacing = source.itemSpacing;
-    target.clipsContent = source.clipsContent;
-  }
-
-  // 4. Replace Children (The "Content" update)
-  // Clear existing children in target
-  for (const child of target.children) {
-    child.remove();
-  }
-  
-  // Clone children from source to target
-  for (const child of source.children) {
-    target.appendChild(child.clone());
-  }
 }
 
 // --- PARSING LOGIC ---
@@ -349,70 +334,33 @@ async function run() {
       figma.ui.postMessage({ type: 'complete', json: JSON.stringify(finalMap, null, 2), count: Object.keys(finalMap).length });
     }
 
-    // === 2. SYNC FRAMES IN-PLACE (NON-DESTRUCTIVE) ===
+    // === 2. EXTRACT FRAMES ===
     else if (msg.type === 'run-extract') {
       try {
         const sourcePage = await figma.getNodeByIdAsync(msg.sourceId);
         const targetPage = await figma.getNodeByIdAsync(msg.targetId);
 
         if (!sourcePage || !targetPage) throw new Error("Pages not found");
-        if (sourcePage.id === targetPage.id) throw new Error("Source and Target must be different");
 
-        // 1. Scan Source for master copies
-        const sourceCandidates = findNodes(sourcePage, 0, CONFIG.SYNC_SEARCH_DEPTH);
-        const { numberedCards: sourceCards } = getIdentifiedCards(sourceCandidates);
+        const allCandidates = findNodes(sourcePage, 0, CONFIG.DEFAULT_SEARCH_DEPTH);
+        const { numberedCards, tokenNodes } = getIdentifiedCards(allCandidates);
         
-        const sourceMap = new Map();
-        sourceCards.forEach(item => sourceMap.set(item.sortIndex, item.node));
+        await delay(100);
+        targetPage.children.forEach(child => child.remove());
 
-        // 2. Scan Target for matches (No renaming here)
-        const targetCandidates = findNodes(targetPage, 0, CONFIG.SYNC_SEARCH_DEPTH);
-        const targetMatches = [];
-        
-        for (const node of targetCandidates) {
-            const match = node.name.match(/^card-(\d+)$/);
-            if (match) {
-                targetMatches.push({
-                    index: parseInt(match[1], 10),
-                    node: node
-                });
-            }
-        }
+        let copiedCount = 0;
+        const cloneAndMove = (node) => {
+          const clone = node.clone();
+          targetPage.appendChild(clone);
+          clone.x = (copiedCount % 10) * (clone.width + 50);
+          clone.y = Math.floor(copiedCount / 10) * (clone.height + 50);
+          copiedCount++;
+        };
 
-        let updatedCount = 0;
-        let notFoundCount = 0;
+        for (const item of numberedCards) cloneAndMove(item.node);
+        for (const node of tokenNodes) cloneAndMove(node);
 
-        // 3. Perform Sync (Update Content In-Place)
-        for (const tItem of targetMatches) {
-            const sourceNode = sourceMap.get(tItem.index);
-            
-            if (sourceNode) {
-                // Determine if we can sync in-place or if we must swap (e.g. Instance issues)
-                const targetIsInstance = tItem.node.type === "INSTANCE";
-                
-                if (targetIsInstance) {
-                    // If target is an instance, we detach it to make it a Frame so we can edit internals
-                    // Alternatively, if you want to keep it as an instance, you'd have to swap the component main.
-                    // Here we assume "Sync Content" means "Make it look like source".
-                    tItem.node.detachInstance();
-                }
-
-                await syncNodeContent(sourceNode, tItem.node);
-                updatedCount++;
-            } else {
-                notFoundCount++;
-            }
-            
-            if (updatedCount % 20 === 0) await delay(10);
-        }
-
-        figma.ui.postMessage({ 
-            type: 'extract-complete', 
-            count: updatedCount, 
-            targetName: targetPage.name,
-            missing: notFoundCount
-        });
-
+        figma.ui.postMessage({ type: 'extract-complete', count: copiedCount, targetName: targetPage.name });
       } catch (err) {
         figma.ui.postMessage({ type: 'error', message: err.message });
       }
@@ -425,14 +373,14 @@ async function run() {
         if (!pageNode) throw new Error("Page not found");
 
         const minidecks = [];
-        const usedColors = new Set(); 
+        const usedHues = []; // Track hues (degrees 0-360) for visual separation
 
         for (const deckFrame of pageNode.children) {
           if (deckFrame.type !== "FRAME" && deckFrame.type !== "GROUP" && deckFrame.type !== "SECTION") continue;
           if (deckFrame.name.toLowerCase().startsWith("card-")) continue;
 
-          const uniqueColor = getRandomColor(usedColors);
-          usedColors.add(uniqueColor);
+          // *** Generate Random Bright Unique Color ***
+          const uniqueColor = getDistinctBrightColor(usedHues);
 
           const deckObj = {
             name: deckFrame.name,
@@ -455,6 +403,7 @@ async function run() {
                       
                       const synergies = [];
                       synergies.push(`${parsed.data.cost} AP`);
+                      
                       if (parsed.data.types && parsed.data.types.length > 0) {
                         synergies.push(...parsed.data.types);
                       }
