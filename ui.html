@@ -2,17 +2,17 @@
 <html>
 <head>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
   <style>
     body { font-family: sans-serif; padding: 20px; color: #333; }
     
-    /* HEADER */
+    /* HEADER & TABS */
     .header {
       display: flex; align-items: center; justify-content: space-between;
       border-bottom: 1px solid #e0e0e0; padding-bottom: 12px; margin-bottom: 15px;
     }
     h3 { margin: 0; font-size: 14px; font-weight: 700; }
 
-    /* TABS */
     .tabs { display: flex; gap: 4px; }
     .tab { 
       padding: 4px 8px; cursor: pointer; color: #666; font-size: 10px;
@@ -24,18 +24,20 @@
     .tab-content { display: none; }
     .tab-content.active { display: block; }
 
-    /* LAYOUT */
+    /* LAYOUT COMPONENTS */
     .row { display: flex; gap: 15px; margin-bottom: 15px; }
-    .col { flex: 1; }
+    .col { flex: 1; min-width: 0; }
     .settings-container { display: flex; align-items: flex-start; gap: 20px; margin-bottom: 15px; }
     
     /* INPUTS */
     label { font-weight: bold; font-size: 11px; cursor: pointer; display: block; margin-bottom: 4px; }
-    select, button, input[type="text"] { width: 100%; padding: 8px; border-radius: 6px; border: 1px solid #ccc; box-sizing: border-box; font-size: 11px; }
+    select, button, input[type="text"], input[type="number"] { 
+      width: 100%; padding: 8px; border-radius: 6px; border: 1px solid #ccc; 
+      box-sizing: border-box; font-size: 11px; 
+    }
     
     .input-line { display: flex; align-items: center; height: 30px; }
     .checkbox-group { display: flex; align-items: center; height: 30px; }
-    
     .input-inline {
       width: 40px; padding: 4px; text-align: center; border-radius: 4px; border: 1px solid #ccc;
       margin-left: 8px; font-size: 11px; height: 26px; box-sizing: border-box;
@@ -54,8 +56,7 @@
     .btn-success:hover { background: #16a34a; }
     .btn-neutral { background: #f3f4f6; color: #374151; border: 1px solid #d1d5db; cursor: pointer; font-weight: bold; }
     .btn-neutral:hover { background: #e5e7eb; }
-    
-    button:disabled, select:disabled, input:disabled { background: #eee !important; color: #aaa !important; cursor: not-allowed; border-color: #ddd; }
+    button:disabled, select:disabled { background: #eee !important; color: #aaa !important; cursor: not-allowed; }
 
     /* TEXTAREA */
     textarea { width: 100%; height: 175px; font-family: monospace; font-size: 10px; margin-top: 5px; border: 1px solid #ddd; }
@@ -64,8 +65,26 @@
     .status { margin-top: 10px; font-size: 11px; font-weight: bold; }
     .status.error { color: red; }
     .status.success { color: green; }
-    .meta-info { font-size: 10px; color: #666; margin-top: 15px; background: #f5f5f5; padding: 8px; border-radius: 4px; border: 1px solid #eee; }
     .hidden { display: none; }
+    .meta-info { font-size: 10px; color: #666; margin-top: 15px; background: #f5f5f5; padding: 8px; border-radius: 4px; border: 1px solid #eee; }
+
+    /* --- STATS SPECIFIC STYLES --- */
+    .stats-header-row { display: flex; gap: 10px; align-items: flex-end; margin-bottom: 15px; }
+    .stats-filter-bar { display: flex; gap: 10px; padding: 10px; background: #f8f9fa; border-radius: 6px; margin-bottom: 15px; border: 1px solid #e5e7eb; }
+    .stat-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 15px; }
+    .stat-card { background: white; border: 1px solid #eee; border-radius: 6px; padding: 10px; text-align: center; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+    .stat-val { font-size: 16px; font-weight: 800; color: #18A0FB; display: block; margin-bottom: 2px; }
+    .stat-label { font-size: 9px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; }
+    
+    .tally-list { font-size: 11px; max-height: 200px; overflow-y: auto; border: 1px solid #eee; border-radius: 4px; padding: 5px; }
+    .tally-item { display: flex; justify-content: space-between; padding: 4px 6px; border-bottom: 1px solid #f5f5f5; }
+    .tally-item:last-child { border-bottom: none; }
+    .tally-name { font-weight: 600; color: #444; }
+    .tally-count { color: #888; background: #eee; padding: 1px 6px; border-radius: 10px; font-size: 9px; }
+
+    .chart-container { position: relative; height: 160px; width: 100%; }
+
+    .section-title { font-size: 11px; font-weight: 700; margin-bottom: 6px; color: #333; margin-top:10px; }
   </style>
 </head>
 <body>
@@ -73,9 +92,10 @@
   <div class="header">
     <h3>TCG Card Exporter</h3>
     <div class="tabs">
-      <div class="tab active" onclick="switchTab('tab-export')">JSON Exporter</div>
-      <div class="tab" onclick="switchTab('tab-extract')">Sync Content</div>
-      <div class="tab" onclick="switchTab('tab-minideck')">Minideck Data</div>
+      <div class="tab active" onclick="switchTab('tab-export')">JSON</div>
+      <div class="tab" onclick="switchTab('tab-extract')">Sync</div>
+      <div class="tab" onclick="switchTab('tab-minideck')">Minidecks</div>
+      <div class="tab" onclick="switchTab('tab-stats')">Stats & Analysis</div>
     </div>
   </div>
 
@@ -84,34 +104,22 @@
       <label for="pageSelect">Select Page to Scan</label>
       <select id="pageSelect"></select>
     </div>
-
     <div class="settings-container">
       <div class="depth-group">
         <div class="input-line">
           <label for="scanDepth">Scan Depth</label>
           <input type="number" id="scanDepth" class="input-inline" value="3" min="1" max="10">
         </div>
-        <div class="helper-text" style="margin-left:6px;">increase this if cards<br>are nested too deeply</div>
       </div>
       <div class="checkbox-group">
-        <label class="checkbox-label">
-          <input type="checkbox" id="chkExportImages" checked>
-          Export Images (PNG)
-        </label>
+        <label class="checkbox-label"><input type="checkbox" id="chkExportImages" checked> Export Images</label>
       </div>
     </div>
-
     <div class="row">
       <button id="runBtn" class="btn-primary col">Smart Scan</button>
       <button id="forceBtn" class="btn-secondary col">Force Full Scan</button>
     </div>
-
     <div id="status" class="status">Ready.</div>
-    
-    <div id="lastScanInfo" class="meta-info hidden">
-      <strong>Last Scan:</strong> <span id="lastScanTime">Never</span> | <span id="lastScanCount">0</span> items.
-    </div>
-
     <div id="resultArea" class="hidden">
       <label style="margin-top:10px;">JSON Output</label>
       <textarea id="output" readonly></textarea>
@@ -120,44 +128,32 @@
         <button id="copyBtn" class="btn-neutral col">Copy JSON</button>
       </div>
     </div>
+    <div id="lastScanInfo" class="meta-info hidden">
+      <strong>Last Scan:</strong> <span id="lastScanTime">Never</span> | <span id="lastScanCount">0</span> items.
+    </div>
   </div>
 
   <div id="tab-extract" class="tab-content">
-    <p class="helper-text" style="font-size:11px; margin-bottom:15px; color:#555;">
-      Updates internal content of Target cards to match Source cards by ID (e.g. "card-1").
-      <br><strong>Non-Destructive:</strong> Preserves frame position and hierarchy.
-      <br>Scans up to 4 levels deep.
-    </p>
-
     <div style="margin-bottom: 15px;">
-      <label for="sourcePageSelect">Source Page (Master)</label>
+      <label for="sourcePageSelect">Source Page</label>
       <select id="sourcePageSelect"></select>
     </div>
-
     <div style="margin-bottom: 20px;">
-      <label for="targetPageSelect">Target Page (To Update)</label>
+      <label for="targetPageSelect">Target Page</label>
       <select id="targetPageSelect"></select>
     </div>
-
     <button id="extractBtn" class="btn-primary">Sync Card Content</button>
     <div id="extractStatus" class="status">Ready.</div>
   </div>
 
   <div id="tab-minideck" class="tab-content">
-    <p class="helper-text" style="font-size:11px; margin-bottom:15px; color:#555;">
-      Extracts Minideck JSON structure based on Frames (Deck Name -> Rarity -> Cards).
-    </p>
-
     <div style="margin-bottom: 20px;">
       <label for="mdPageSelect">Select Page to Scan</label>
       <select id="mdPageSelect"></select>
     </div>
-
     <button id="mdExtractBtn" class="btn-primary">Extract Minideck Data</button>
     <div id="mdStatus" class="status">Ready.</div>
-
     <div id="mdResultArea" class="hidden">
-      <label style="margin-top:10px;">JSON Output</label>
       <textarea id="mdOutput" readonly></textarea>
       <div class="row" style="margin-top: 10px;">
         <button id="mdCopyBtn" class="btn-neutral col">Copy JSON</button>
@@ -165,8 +161,74 @@
     </div>
   </div>
 
+  <div id="tab-stats" class="tab-content">
+    <div class="stats-header-row">
+      <div style="flex: 2;">
+        <label for="statsPageSelect">Page to Analyze</label>
+        <select id="statsPageSelect"></select>
+      </div>
+      <div style="flex: 1;">
+        <button id="statsBtn" class="btn-primary">Analyze</button>
+      </div>
+    </div>
+    <div id="statsStatus" class="status" style="margin-bottom:10px;">Ready.</div>
+
+    <div id="statsDashboard" class="hidden">
+      <div class="stats-filter-bar">
+        <div class="col"><label for="filterType">Type</label><select id="filterType" onchange="recalcStats()"><option value="all">All</option></select></div>
+        <div class="col"><label for="filterCost">Cost</label><select id="filterCost" onchange="recalcStats()"><option value="all">All</option></select></div>
+        <div class="col"><label for="filterKeyword">Keyword</label><select id="filterKeyword" onchange="recalcStats()"><option value="all">All</option></select></div>
+        <div class="col">
+          <label for="filterBody">Body Part</label>
+          <select id="filterBody" onchange="recalcStats()">
+            <option value="all">All</option>
+            <option value="head">Head</option>
+            <option value="body">Body</option>
+            <option value="leg">Leg</option>
+          </select>
+        </div>
+      </div>
+      
+      <div class="helper-text" style="text-align:right; margin-bottom:10px;">Showing <span id="filteredCount">0</span> / <span id="totalStatsCount">0</span> cards</div>
+
+      <div class="stat-grid">
+        <div class="stat-card"><span class="stat-val" id="valAvgCost">-</span><span class="stat-label">Avg Cost</span></div>
+        <div class="stat-card"><span class="stat-val" id="valAvgDmg">-</span><span class="stat-label">Avg DMG</span></div>
+        <div class="stat-card"><span class="stat-val" id="valDmgPerAp">-</span><span class="stat-label">DMG Per AP</span></div>
+        <div class="stat-card"><span class="stat-val" id="valAttackRatio">-</span><span class="stat-label">Attack Card %</span></div>
+        <div class="stat-card"><span class="stat-val" id="valAvgBlock">-</span><span class="stat-label">Avg Block</span></div>
+        <div class="stat-card"><span class="stat-val" id="valNumBlocks">-</span><span class="stat-label">Def Cards</span></div>
+      </div>
+
+      <div class="row">
+        <div class="col">
+           <div class="section-title">Cost Distribution</div>
+           <div class="chart-container">
+             <canvas id="costChart"></canvas>
+           </div>
+        </div>
+        <div class="col">
+          <div class="section-title">Body Part Distribution</div>
+          <div class="chart-container">
+            <canvas id="bodyPartChart"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="col">
+          <div class="section-title">Type Tally</div><div id="typeTallyList" class="tally-list"></div>
+        </div>
+        <div class="col">
+          <div class="section-title">Keyword Tally</div><div id="kwTallyList" class="tally-list"></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
   <script>
-    // --- Elements: Tab 1 ---
+    // --- ELEMENTS ---
     const pageSelect = document.getElementById('pageSelect');
     const scanDepthInput = document.getElementById('scanDepth');
     const chkExportImages = document.getElementById('chkExportImages');
@@ -180,25 +242,32 @@
     const lastScanInfo = document.getElementById('lastScanInfo');
     const lastScanTime = document.getElementById('lastScanTime');
     const lastScanCount = document.getElementById('lastScanCount');
-
-    // --- Elements: Tab 2 ---
     const sourcePageSelect = document.getElementById('sourcePageSelect');
     const targetPageSelect = document.getElementById('targetPageSelect');
     const extractBtn = document.getElementById('extractBtn');
     const extractStatus = document.getElementById('extractStatus');
-
-    // --- Elements: Tab 3 ---
     const mdPageSelect = document.getElementById('mdPageSelect');
     const mdExtractBtn = document.getElementById('mdExtractBtn');
     const mdStatus = document.getElementById('mdStatus');
     const mdOutput = document.getElementById('mdOutput');
     const mdResultArea = document.getElementById('mdResultArea');
     const mdCopyBtn = document.getElementById('mdCopyBtn');
-
+    const statsPageSelect = document.getElementById('statsPageSelect');
+    const statsBtn = document.getElementById('statsBtn');
+    const statsStatus = document.getElementById('statsStatus');
+    const statsDashboard = document.getElementById('statsDashboard');
+    const filterType = document.getElementById('filterType');
+    const filterCost = document.getElementById('filterCost');
+    const filterKeyword = document.getElementById('filterKeyword');
+    const filterBody = document.getElementById('filterBody');
+    
+    // Globals
     let zipBlob = null;
     let accumulatedImages = [];
+    let rawStatsData = [];
+    let costChartInstance = null;
+    let bodyChartInstance = null;
 
-    // --- TABS ---
     window.switchTab = (tabId) => {
       document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
       document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
@@ -207,7 +276,6 @@
       if(activeTabBtn) activeTabBtn.classList.add('active');
     };
 
-    // --- UI HELPERS ---
     function toggleInputs(disabled) {
       const allInputs = document.querySelectorAll('button, select, input, .tab');
       allInputs.forEach(el => {
@@ -225,168 +293,269 @@
       const btn = document.getElementById(btnId);
       ta.select();
       document.execCommand('copy');
-      const originalText = btn.textContent;
+      const old = btn.textContent;
       btn.textContent = "Copied!";
-      setTimeout(() => btn.textContent = originalText, 1500);
+      setTimeout(() => btn.textContent = old, 1500);
     }
 
-    // --- BUTTON LISTENERS ---
+    // --- KEYWORD HELPER ---
+    function normalizeKeyword(k) {
+      let n = k.replace(/\d+/g, 'X');
+      const lower = n.toLowerCase();
+      
+      if (lower.startsWith("choose")) return "Choose";
+      if (lower.startsWith("pierce")) return "Pierce";
+      if (lower.startsWith("tempo")) return "Tempo";
+      if (lower.startsWith("toxic")) return "Toxic";
+      
+      return n;
+    }
+
+    // --- BUTTON ACTIONS ---
     runBtn.onclick = () => startScan(false);
     forceBtn.onclick = () => startScan(true);
     copyBtn.onclick = () => copyToClipboard('output', 'copyBtn');
     mdCopyBtn.onclick = () => copyToClipboard('mdOutput', 'mdCopyBtn');
 
-    // EXPORT
     function startScan(forceFull) {
       const pageId = pageSelect.value;
-      const doImages = chkExportImages.checked;
-      const depth = parseInt(scanDepthInput.value, 10) || 3;
       if (!pageId) return;
-
       accumulatedImages = [];
       zipBlob = null;
       toggleInputs(true);
-      
-      const modeText = forceFull ? "Full Scan" : "Smart Scan";
-      status.textContent = `Running ${modeText}...`;
-      status.className = "status";
+      status.textContent = forceFull ? "Full Scan..." : "Smart Scan...";
       resultArea.classList.add('hidden');
       lastScanInfo.classList.add('hidden'); 
-
-      parent.postMessage({ pluginMessage: { 
-        type: 'run-scan', pageId, exportImages: doImages, forceFull, scanDepth: depth 
-      }}, '*');
+      parent.postMessage({ pluginMessage: { type: 'run-scan', pageId, exportImages: chkExportImages.checked, forceFull, scanDepth: parseInt(scanDepthInput.value)||3 }}, '*');
     }
 
-    // EXTRACT (SYNC)
     extractBtn.onclick = () => {
-      const sourceId = sourcePageSelect.value;
-      const targetId = targetPageSelect.value;
-      if (!sourceId || !targetId) return;
-      if (sourceId === targetId) { alert("Source and Target pages must be different."); return; }
-
+      if (!sourcePageSelect.value || !targetPageSelect.value || sourcePageSelect.value === targetPageSelect.value) { alert("Invalid pages."); return; }
       toggleInputs(true);
-      extractStatus.textContent = "Updating card content...";
-      extractStatus.className = "status";
-
-      parent.postMessage({ pluginMessage: { type: 'run-extract', sourceId, targetId }}, '*');
+      extractStatus.textContent = "Updating...";
+      parent.postMessage({ pluginMessage: { type: 'run-extract', sourceId: sourcePageSelect.value, targetId: targetPageSelect.value }}, '*');
     };
 
-    // MINIDECK EXTRACT
     mdExtractBtn.onclick = () => {
-      const pageId = mdPageSelect.value;
-      if (!pageId) return;
-
+      if (!mdPageSelect.value) return;
       toggleInputs(true);
-      mdStatus.textContent = "Extracting Minideck Data...";
-      mdStatus.className = "status";
+      mdStatus.textContent = "Extracting...";
       mdResultArea.classList.add('hidden');
-
-      parent.postMessage({ pluginMessage: { type: 'extract-minideck-data', pageId }}, '*');
+      parent.postMessage({ pluginMessage: { type: 'extract-minideck-data', pageId: mdPageSelect.value }}, '*');
     };
 
     downloadBtn.onclick = () => {
       if (zipBlob) {
-        const now = new Date();
-        const dateStr = now.toISOString().split('T')[0];
-        const timeStr = now.toTimeString().split(' ')[0].replace(/:/g, '-');
-        const filename = `cards_export_${dateStr}_${timeStr}.zip`;
         const link = document.createElement('a');
         link.href = URL.createObjectURL(zipBlob);
-        link.download = filename;
+        link.download = `cards_export_${Date.now()}.zip`;
         link.click();
       }
+    };
+
+    // --- STATS ---
+    statsBtn.onclick = () => {
+      const pageId = statsPageSelect.value;
+      if (!pageId) { alert("Select a page."); return; }
+      toggleInputs(true);
+      statsStatus.textContent = "Analyzing...";
+      statsDashboard.classList.add('hidden');
+      parent.postMessage({ pluginMessage: { type: 'get-stats-data', pageId }}, '*');
+    };
+
+    // --- CHART HELPER ---
+    function renderChart(canvasId, labels, data, labelStr, chartInstanceVar) {
+      const ctx = document.getElementById(canvasId).getContext('2d');
+      if (chartInstanceVar) chartInstanceVar.destroy();
+
+      return new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: labelStr,
+            data: data,
+            backgroundColor: '#18A0FB',
+            borderRadius: 3
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            y: { beginAtZero: true, ticks: { precision: 0 } },
+            x: { grid: { display: false } }
+          }
+        }
+      });
+    }
+
+    window.recalcStats = () => {
+      if (!rawStatsData.length) return;
+      
+      const filtered = rawStatsData.filter(c => {
+        let tm = (filterType.value === 'all') || (c.types && c.types.some(t => t === filterType.value));
+        let cm = (filterCost.value === 'all') || (String(c.cost) === filterCost.value);
+        let km = (filterKeyword.value === 'all');
+        if (!km && c.keywords) {
+          km = c.keywords.some(k => normalizeKeyword(k) === filterKeyword.value);
+        }
+        let bm = (filterBody.value === 'all');
+        if (!bm) {
+           if (filterBody.value === 'head') bm = c['AttackHead?'];
+           else if (filterBody.value === 'body') bm = c['AttackBody?'];
+           else if (filterBody.value === 'leg') bm = c['AttackLeg?'];
+        }
+        return tm && cm && km && bm;
+      });
+
+      document.getElementById('filteredCount').textContent = filtered.length;
+      document.getElementById('totalStatsCount').textContent = rawStatsData.length;
+      
+      if (!filtered.length) {
+         ['valAvgCost','valAvgDmg','valDmgPerAp','valAttackRatio','valAvgBlock','valNumBlocks'].forEach(id => document.getElementById(id).textContent = "-");
+         ['typeTallyList','kwTallyList'].forEach(id => document.getElementById(id).innerHTML = "");
+         if (costChartInstance) costChartInstance.destroy();
+         if (bodyChartInstance) bodyChartInstance.destroy();
+         return;
+      }
+
+      let tDmg=0, tCost=0, tBlk=0, nBlk=0, nTac=0, nNonTac=0;
+      let head=0, body=0, leg=0;
+      const types={}, costs={}, keywords={};
+
+      filtered.forEach(c => {
+        tDmg += (c.DMG || 0);
+        tCost += (c.cost || 0);
+        
+        costs[c.cost] = (costs[c.cost] || 0) + 1;
+
+        if (c.types && c.types.some(t => t.toLowerCase() === 'tactics')) nTac++; else nNonTac++;
+
+        if (Math.abs(c.Block||0) > 0) { tBlk += Math.abs(c.Block); nBlk++; }
+        if (c['AttackHead?']) head++;
+        if (c['AttackBody?']) body++;
+        if (c['AttackLeg?']) leg++;
+
+        if (c.types) c.types.forEach(t => { if(t.trim()) types[t.trim()] = (types[t.trim()]||0)+1; });
+
+        if (c.keywords) {
+          const seenKeywords = new Set();
+          c.keywords.forEach(k => {
+             const normalized = normalizeKeyword(k); 
+             if (!seenKeywords.has(normalized)) {
+                keywords[normalized] = (keywords[normalized] || 0) + 1;
+                seenKeywords.add(normalized);
+             }
+          });
+        }
+      });
+
+      document.getElementById('valAvgCost').textContent = (tCost/filtered.length).toFixed(2);
+      document.getElementById('valAvgDmg').textContent = (tDmg/filtered.length).toFixed(1);
+      document.getElementById('valDmgPerAp').textContent = tCost > 0 ? (tDmg/tCost).toFixed(2) : (tDmg > 0 ? "∞" : "0");
+      
+      const attackPercent = (nNonTac / filtered.length) * 100;
+      document.getElementById('valAttackRatio').textContent = attackPercent.toFixed(1) + "%";
+
+      document.getElementById('valAvgBlock').textContent = nBlk > 0 ? (tBlk/nBlk).toFixed(1) : "0";
+      document.getElementById('valNumBlocks').textContent = nBlk;
+
+      // --- RENDER CHARTS ---
+      // 1. Cost Chart
+      const costKeys = Object.keys(costs).map(Number).sort((a,b) => a-b);
+      const costLabels = costKeys.map(k => k + " AP");
+      const costData = costKeys.map(k => costs[k]);
+      costChartInstance = renderChart('costChart', costLabels, costData, 'Cards', costChartInstance);
+
+      // 2. Body Part Chart
+      const bodyLabels = ['Head', 'Body', 'Leg'];
+      const bodyData = [head, body, leg];
+      bodyChartInstance = renderChart('bodyPartChart', bodyLabels, bodyData, 'Cards', bodyChartInstance);
+
+
+      // --- RENDER LISTS ---
+      const renderTally = (map, id, numericSort) => {
+        const list = document.getElementById(id);
+        list.innerHTML = "";
+        const keys = Object.keys(map).sort((a,b) => numericSort ? parseInt(a)-parseInt(b) : map[b]-map[a]);
+        keys.forEach(k => {
+          const div = document.createElement('div');
+          div.className = 'tally-item';
+          div.innerHTML = `<span class="tally-name">${k}</span><span class="tally-count">${map[k]}</span>`;
+          list.appendChild(div);
+        });
+      };
+
+      renderTally(types, 'typeTallyList', false);
+      renderTally(keywords, 'kwTallyList', false);
     };
 
     // --- MESSAGE HANDLER ---
     window.onmessage = async (event) => {
       if (!event.data || !event.data.pluginMessage) return;
       const msg = event.data.pluginMessage;
-
+      
       if (msg.type === 'init-state') {
-        const fillSelect = (sel) => {
-          sel.innerHTML = "";
-          msg.pages.forEach(p => {
-            const opt = document.createElement('option');
-            opt.value = p.id;
-            opt.textContent = p.name;
-            if (p.current) opt.selected = true;
-            sel.appendChild(opt);
-          });
-        };
-        fillSelect(pageSelect);
-        fillSelect(sourcePageSelect);
-        fillSelect(targetPageSelect);
-        fillSelect(mdPageSelect);
-
+        const fill = (sel) => { sel.innerHTML=""; msg.pages.forEach(p=>{const o=document.createElement('option');o.value=p.id;o.textContent=p.name;if(p.current)o.selected=true;sel.appendChild(o);}) };
+        fill(pageSelect); fill(sourcePageSelect); fill(targetPageSelect); fill(mdPageSelect); fill(statsPageSelect);
         if (msg.lastScanDate) {
-          lastScanInfo.classList.remove('hidden');
-          lastScanTime.textContent = new Date(msg.lastScanDate).toLocaleString();
-          lastScanCount.textContent = msg.lastScanCount || 0;
-          if (msg.lastJson) {
-            output.value = msg.lastJson;
-            resultArea.classList.remove('hidden');
-          }
+           lastScanInfo.classList.remove('hidden');
+           lastScanTime.textContent = new Date(msg.lastScanDate).toLocaleString();
+           lastScanCount.textContent = msg.lastScanCount || 0;
+           if(msg.lastJson){ output.value=msg.lastJson; resultArea.classList.remove('hidden'); }
         }
-        status.textContent = "Ready.";
         toggleInputs(false);
       }
-
       else if (msg.type === 'image-chunk') {
-        if (msg.data) accumulatedImages.push({ filename: msg.filename, data: msg.data });
-        status.textContent = `Processing... (${msg.current} / ${msg.total})`;
+         if(msg.data) accumulatedImages.push({filename:msg.filename, data:msg.data});
+         status.textContent=`Processing... (${msg.current}/${msg.total})`;
       }
-
       else if (msg.type === 'complete') {
-        status.textContent = `Generating ZIP...`;
-        output.value = msg.json;
-        resultArea.classList.remove('hidden');
-        lastScanInfo.classList.remove('hidden');
-        lastScanTime.textContent = "Just now";
-        lastScanCount.textContent = msg.count;
-        try {
-          const zip = new JSZip();
-          zip.file("cards.json", msg.json);
-          if (accumulatedImages.length > 0) {
-            const imgFolder = zip.folder("img");
-            accumulatedImages.forEach(img => imgFolder.file(img.filename, img.data));
-          }
-          zipBlob = await zip.generateAsync({ type: "blob" });
-          downloadBtn.textContent = `Download ZIP (${(zipBlob.size / 1024 / 1024).toFixed(2)} MB)`;
-          status.textContent = `Done! Processed ${msg.count} items.`;
-          status.className = "status success";
-        } catch (err) {
-          status.textContent = "ZIP Error: " + err.message;
-          status.className = "status error";
-        }
-        toggleInputs(false);
+         status.textContent="Generating ZIP...";
+         output.value = msg.json;
+         resultArea.classList.remove('hidden');
+         try {
+           const zip = new JSZip();
+           zip.file("cards.json", msg.json);
+           if(accumulatedImages.length) {
+             const f=zip.folder("img"); accumulatedImages.forEach(i=>f.file(i.filename,i.data));
+           }
+           zipBlob = await zip.generateAsync({type:"blob"});
+           downloadBtn.textContent=`Download ZIP (${(zipBlob.size/1024/1024).toFixed(2)} MB)`;
+           status.textContent="Done!"; status.className="status success";
+         } catch(e) { status.textContent="ZIP Error"; status.className="status error"; }
+         toggleInputs(false);
       }
-
-      else if (msg.type === 'extract-complete') {
-        extractStatus.innerHTML = `Updated content for <b>${msg.count}</b> cards.` + 
-                                  (msg.missing > 0 ? `<br>(Skipped ${msg.missing} cards not found in source)` : "");
-        extractStatus.className = "status success";
-        toggleInputs(false);
+      else if (msg.type === 'stats-data') {
+         rawStatsData = msg.data;
+         const allTypes = new Set(), allCosts = new Set(), allKeywords = new Set();
+         rawStatsData.forEach(c => {
+           if(c.types) c.types.forEach(t=>allTypes.add(t));
+           if(c.cost !== undefined) allCosts.add(c.cost);
+           if(c.keywords) c.keywords.forEach(k => allKeywords.add(normalizeKeyword(k)));
+         });
+         
+         filterType.innerHTML='<option value="all">All Types</option>';
+         Array.from(allTypes).sort().forEach(t=>{const o=document.createElement('option');o.value=t;o.textContent=t;filterType.appendChild(o);});
+         
+         filterCost.innerHTML='<option value="all">All Costs</option>';
+         Array.from(allCosts).sort((a,b)=>a-b).forEach(c=>{const o=document.createElement('option');o.value=c;o.textContent=c+" AP";filterCost.appendChild(o);});
+         
+         filterKeyword.innerHTML='<option value="all">All Keywords</option>';
+         Array.from(allKeywords).sort().forEach(k=>{const o=document.createElement('option');o.value=k;o.textContent=k;filterKeyword.appendChild(o);});
+         
+         statsStatus.textContent="Analysis Complete."; statsStatus.className="status success";
+         statsDashboard.classList.remove('hidden');
+         toggleInputs(false);
+         recalcStats();
       }
-
-      else if (msg.type === 'minideck-data-complete') {
-        mdStatus.textContent = `Success! Extracted data for ${msg.count} minidecks.`;
-        mdStatus.className = "status success";
-        mdOutput.value = msg.json;
-        mdResultArea.classList.remove('hidden');
-        toggleInputs(false);
-      }
-
       else if (msg.type === 'error') {
-        toggleInputs(false);
-        const activeStatus = document.querySelector('.tab-content.active .status');
-        if (activeStatus) {
-            activeStatus.textContent = "Error: " + msg.message;
-            activeStatus.className = "status error";
-        } else {
-            alert("Error: " + msg.message);
-        }
+         alert(msg.message); toggleInputs(false);
       }
+      else if (msg.type === 'extract-complete') { extractStatus.textContent=`Updated ${msg.count} cards.`; toggleInputs(false); }
+      else if (msg.type === 'minideck-data-complete') { mdOutput.value=msg.json; mdResultArea.classList.remove('hidden'); toggleInputs(false); }
     };
   </script>
 </body>

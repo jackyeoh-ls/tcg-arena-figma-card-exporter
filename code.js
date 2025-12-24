@@ -31,37 +31,20 @@ function getDistinctBrightColor(usedHues) {
   let attempts = 0;
   let isDistict = false;
 
-  // 1. Hue Selection (Try to find a distinct hue)
   while (!isDistict && attempts < 50) {
     h = Math.floor(Math.random() * 360);
-    
-    // Check distance from existing hues
     let tooClose = false;
     for (const existingHue of usedHues) {
       let diff = Math.abs(h - existingHue);
-      if (diff > 180) diff = 360 - diff; // Handle circle wrap-around (e.g. 350 vs 10)
-      
-      if (diff < 30) { // Enforce ~30 degree separation
-        tooClose = true;
-        break;
-      }
+      if (diff > 180) diff = 360 - diff;
+      if (diff < 30) { tooClose = true; break; }
     }
-
-    if (!tooClose) {
-      isDistict = true;
-    }
+    if (!tooClose) isDistict = true;
     attempts++;
   }
-
-  // If we run out of attempts (too many decks), just accept the last generated hue
   usedHues.push(h);
-
-  // 2. High Brightness & Saturation
-  // Saturation: 75% - 100% (Vibrant)
   const s = Math.floor(Math.random() * (100 - 75 + 1)) + 75; 
-  // Lightness: 60% - 85% (Bright, but legible text)
   const l = Math.floor(Math.random() * (85 - 60 + 1)) + 60; 
-
   return hslToHex(h, s, l);
 }
 
@@ -88,12 +71,44 @@ function getTextNodes(node) {
   return texts;
 }
 
+// --- HELPER: Detect Bold Segments & Clean Up ---
+function getBoldedPhrases(node) {
+  if (!node.getStyledTextSegments) return [];
+  const segments = node.getStyledTextSegments(['fontName']);
+  const bolds = [];
+  
+  for (const seg of segments) {
+    const style = seg.fontName.style.toLowerCase();
+    const isBold = style.includes('bold') || style.includes('heavy') || style.includes('black');
+    
+    if (isBold) {
+      // 1. Split by newline (handle chained keywords)
+      const parts = seg.characters.split('\n');
+      
+      for (let part of parts) {
+        // 2. Remove special chars: ->, ., :, and the Unicode Arrow (→)
+        let clean = part.replace(/[->.:→]/g, "").trim();
+        
+        // 3. Title Case
+        clean = toTitleCase(clean);
+
+        // 4. Validate (must be more than just symbols)
+        if (clean.length > 1 || /[a-zA-Z0-9]/.test(clean)) {
+          bolds.push(clean);
+        }
+      }
+    }
+  }
+  return bolds;
+}
+
 // --- PARSING LOGIC ---
 async function parseCard(cardNode, assignedId) {
   const extracted = {
     name: "Unknown", 
     type: "", 
     types: [], 
+    keywords: [], 
     cost: 0, 
     damage: 0, 
     block: 0, 
@@ -105,21 +120,26 @@ async function parseCard(cardNode, assignedId) {
 
   for (const layer of textLayers) {
     const rawContent = layer.characters || "";
-    const content = rawContent.replace(/[\r\n]+/g, " ").trim();
-    if (!content) continue;
+    // Create a flattened version for Regex (Stats), but keep rawContent for Text/Keywords
+    const flatContent = rawContent.replace(/[\r\n]+/g, " ").trim();
+    
+    if (!flatContent) continue;
 
-    const costMatch = content.match(/^(\d+)\s*ap$/);
+    // 1. Cost
+    const costMatch = flatContent.match(/^(\d+)\s*ap$/i);
     if (costMatch) { extracted.cost = parseInt(costMatch[1], 10); continue; }
 
-    const dmgMatch = content.match(/^(\d+|-)\s*dmg$/);
+    // 2. Damage
+    const dmgMatch = flatContent.match(/^(\d+|-)\s*dmg$/i);
     if (dmgMatch) { extracted.damage = dmgMatch[1] === "-" ? 0 : parseInt(dmgMatch[1], 10); continue; }
 
-    if (/block|dodge/i.test(content)) {
+    // 3. Block/Dodge
+    if (/block|dodge/i.test(flatContent)) {
       let val = 0;
       let foundMatch = false;
-      const isDodge = /dodge/i.test(content);
-      const matchA = content.match(/(?:block|dodge)\s*(?:all|head|body|leg)?\s*(\d+)/i);
-      const matchB = content.match(/(\d+)%\s*(?:block|dodge)/);
+      const isDodge = /dodge/i.test(flatContent);
+      const matchA = flatContent.match(/(?:block|dodge)\s*(?:all|head|body|leg)?\s*(\d+)/i);
+      const matchB = flatContent.match(/(\d+)%\s*(?:block|dodge)/i);
 
       if (matchA) { val = parseInt(matchA[1], 10); foundMatch = true; } 
       else if (matchB) { val = parseInt(matchB[1], 10); foundMatch = true; }
@@ -127,25 +147,44 @@ async function parseCard(cardNode, assignedId) {
       if (foundMatch) { extracted.block = isDodge ? -1 * val : val; continue; }
     }
 
-    const typeTextMatch = content.match(/^\(([^)]+)\)\s*(.*)/);
+    // 4. Type & Description (Main Text)
+    const typeTextMatch = flatContent.match(/^\(([^)]+)\)\s*(.*)/);
     if (typeTextMatch) {
       const rawTypeStr = typeTextMatch[1];
       extracted.types = rawTypeStr.split(',').map(t => toTitleCase(t.trim()));
       extracted.type = extracted.types[0] || "";
-      extracted.text = typeTextMatch[2].toLowerCase();
+      
+      // PRESERVE NEWLINES: Extract description from rawContent, not flatContent
+      const typeEndIndex = rawContent.indexOf(')');
+      if (typeEndIndex !== -1) {
+        extracted.text = rawContent.substring(typeEndIndex + 1).trim();
+      } else {
+        extracted.text = typeTextMatch[2]; // Fallback
+      }
+
+      // ** DETECT KEYWORDS (BOLD) **
+      const rawBolds = getBoldedPhrases(layer);
+      
+      // Filter: exclude the Type itself if bolded
+      extracted.keywords = rawBolds.filter(b => {
+         const cleanB = b.replace(/[()]/g, '').trim().toLowerCase();
+         return !extracted.types.some(t => t.toLowerCase() === cleanB);
+      });
       continue;
     }
 
-    const words = content.split(/\s+/);
+    // 5. Zones
+    const words = flatContent.split(/\s+/);
     const validZones = ["head", "body", "leg"];
     if (words.every(w => validZones.includes(w.toLowerCase())) && words.length > 0) {
-      if (/Head/i.test(content)) extracted.head = true;
-      if (/Body/i.test(content)) extracted.body = true;
-      if (/Leg/i.test(content)) extracted.leg = true;
+      if (/Head/i.test(flatContent)) extracted.head = true;
+      if (/Body/i.test(flatContent)) extracted.body = true;
+      if (/Leg/i.test(flatContent)) extracted.leg = true;
       continue;
     }
 
-    if (!content.match(/^\d+$/)) { extracted.name = toTitleCase(content); }
+    // 6. Name (Fallback)
+    if (!flatContent.match(/^\d+$/)) { extracted.name = toTitleCase(flatContent); }
   }
 
   const imgName = `card-${assignedId}.png`;
@@ -169,10 +208,11 @@ async function parseCard(cardNode, assignedId) {
       name: extracted.name,
       type: extracted.type,
       types: extracted.types,
+      keywords: extracted.keywords, // Cleaned & TitleCased
       cost: extracted.cost,
       DMG: extracted.damage,
       Block: extracted.block,
-      Text: extracted.text,
+      Text: extracted.text, // Preserves newlines
       "AttackHead?": extracted.head,
       "AttackBody?": extracted.body,
       "AttackLeg?": extracted.leg
@@ -200,6 +240,7 @@ function parseToken(tokenNode) {
       },
       name: `Token: ${displayName}`,
       type: "false", cost: 0,
+      keywords: [],
       "AttackHead?": false, "AttackBody?": false, "AttackLeg?": false,
       Text: "", Block: 0, DMG: 0
     },
@@ -237,9 +278,7 @@ function getIdentifiedCards(allCandidates) {
       node.name = newName; 
       numberedCards.push({ node, sortIndex: nextId });
       nextId++;
-    } catch (err) {
-      console.error("Renaming failed", err);
-    }
+    } catch (err) { console.error("Renaming failed", err); }
   }
 
   numberedCards.sort((a, b) => a.sortIndex - b.sortIndex);
@@ -260,9 +299,7 @@ async function run() {
   let storedCache = null;
   try {
     storedCache = await figma.clientStorage.getAsync(CONFIG.STORAGE_KEY);
-  } catch (e) {
-    console.log("No cache found");
-  }
+  } catch (e) { console.log("No cache"); }
 
   figma.ui.postMessage({ 
     type: 'init-state', 
@@ -320,12 +357,8 @@ async function run() {
         }
       };
 
-      for (const item of numberedCards) {
-        await processNode(item.node, item.sortIndex, parseCard);
-      }
-      for (const node of tokenNodes) {
-        await processNode(node, null, parseToken);
-      }
+      for (const item of numberedCards) { await processNode(item.node, item.sortIndex, parseCard); }
+      for (const node of tokenNodes) { await processNode(node, null, parseToken); }
 
       const newCache = { timestamp: Date.now(), json: finalMap };
       storedCache = newCache; 
@@ -339,7 +372,6 @@ async function run() {
       try {
         const sourcePage = await figma.getNodeByIdAsync(msg.sourceId);
         const targetPage = await figma.getNodeByIdAsync(msg.targetId);
-
         if (!sourcePage || !targetPage) throw new Error("Pages not found");
 
         const allCandidates = findNodes(sourcePage, 0, CONFIG.DEFAULT_SEARCH_DEPTH);
@@ -356,43 +388,33 @@ async function run() {
           clone.y = Math.floor(copiedCount / 10) * (clone.height + 50);
           copiedCount++;
         };
-
         for (const item of numberedCards) cloneAndMove(item.node);
         for (const node of tokenNodes) cloneAndMove(node);
 
         figma.ui.postMessage({ type: 'extract-complete', count: copiedCount, targetName: targetPage.name });
-      } catch (err) {
-        figma.ui.postMessage({ type: 'error', message: err.message });
-      }
+      } catch (err) { figma.ui.postMessage({ type: 'error', message: err.message }); }
     }
 
-    // === 3. MINIDECK DATA EXTRACTION ===
+    // === 3. MINIDECK DATA ===
     else if (msg.type === 'extract-minideck-data') {
       try {
         const pageNode = await figma.getNodeByIdAsync(msg.pageId);
         if (!pageNode) throw new Error("Page not found");
 
         const minidecks = [];
-        const usedHues = []; // Track hues (degrees 0-360) for visual separation
-
+        const usedHues = []; 
         for (const deckFrame of pageNode.children) {
           if (deckFrame.type !== "FRAME" && deckFrame.type !== "GROUP" && deckFrame.type !== "SECTION") continue;
           if (deckFrame.name.toLowerCase().startsWith("card-")) continue;
 
-          // *** Generate Random Bright Unique Color ***
           const uniqueColor = getDistinctBrightColor(usedHues);
-
           const deckObj = {
-            name: deckFrame.name,
-            description: "Generated from Figma",
-            color: uniqueColor,
-            cardPool: []
+            name: deckFrame.name, description: "Generated from Figma", color: uniqueColor, cardPool: []
           };
 
           if (deckFrame.children) {
             for (const rarityFrame of deckFrame.children) {
               if (rarityFrame.type !== "FRAME" && rarityFrame.type !== "GROUP") continue;
-              
               const rarityName = rarityFrame.name.toLowerCase();
               if (rarityName === "generated") continue;
 
@@ -400,39 +422,40 @@ async function run() {
                 for (const cardNode of rarityFrame.children) {
                    if (/^(cards?)-/.test(cardNode.name)) {
                       const parsed = await parseCard(cardNode, 0); 
-                      
                       const synergies = [];
                       synergies.push(`${parsed.data.cost} AP`);
-                      
-                      if (parsed.data.types && parsed.data.types.length > 0) {
-                        synergies.push(...parsed.data.types);
-                      }
-
+                      if (parsed.data.types && parsed.data.types.length > 0) synergies.push(...parsed.data.types);
                       deckObj.cardPool.push({
-                        name: parsed.data.name,
-                        rarity: rarityName,
-                        synergies: synergies
+                        name: parsed.data.name, rarity: rarityName, synergies: synergies
                       });
                    }
                 }
               }
             }
           }
-          
           minidecks.push(deckObj);
         }
+        figma.ui.postMessage({ type: 'minideck-data-complete', count: minidecks.length, json: JSON.stringify(minidecks, null, 2) });
+      } catch (err) { figma.ui.postMessage({ type: 'error', message: err.message }); }
+    }
 
-        figma.ui.postMessage({ 
-          type: 'minideck-data-complete', 
-          count: minidecks.length, 
-          json: JSON.stringify(minidecks, null, 2) 
-        });
+    // === 4. STATS DATA ===
+    else if (msg.type === 'get-stats-data') {
+      try {
+        const pageNode = await figma.getNodeByIdAsync(msg.pageId);
+        if (!pageNode) throw new Error("Page not found");
 
-      } catch (err) {
-        figma.ui.postMessage({ type: 'error', message: err.message });
-      }
+        const allCandidates = findNodes(pageNode, 0, CONFIG.DEFAULT_SEARCH_DEPTH);
+        const { numberedCards } = getIdentifiedCards(allCandidates);
+        
+        const statsData = [];
+        for (const item of numberedCards) {
+          const result = await parseCard(item.node, item.sortIndex);
+          if (result && result.data) statsData.push(result.data);
+        }
+        figma.ui.postMessage({ type: 'stats-data', data: statsData });
+      } catch (err) { figma.ui.postMessage({ type: 'error', message: err.message }); }
     }
   };
 }
-
 run();
